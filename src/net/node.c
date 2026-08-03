@@ -1,10 +1,10 @@
 #include "node.h"
-#include "log.h"
-#include "role.h"
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include "../logging/log.h"
+#include "role.h"
 
 int node_init(struct Node *node, const char *addr, uint16_t port) {
     if (!node) {

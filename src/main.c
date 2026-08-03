@@ -4,9 +4,9 @@
 #include <signal.h>
 #include <sys/syslog.h>
 #include <unistd.h>
-#include "log.h"
-#include "node.h"
-#include "role.h"
+#include "logging/log.h"
+#include "net/node.h"
+#include "net/role.h"
 
 #define DEFAULT_PORT (uint16_t)6969
 
