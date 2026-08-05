@@ -1,6 +1,10 @@
 CC      := cc
-CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -Isrc
-LDLIBS := -lncurses -ludev -lpulse-simple -lpulse -lcrypto
+
+SODIUM_CFLAGS := $(shell pkg-config --cflags libsodium)
+SODIUM_LIBS   := $(shell pkg-config --libs libsodium)
+
+CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -Isrc $(SODIUM_CFLAGS)
+LDLIBS  := -lncurses -ludev -lpulse-simple -lpulse $(SODIUM_LIBS)
 
 SRC_DIR := src
 OBJ_DIR := build
@@ -70,3 +74,4 @@ clean:
 	rm -rf $(OBJ_DIR) $(BIN) $(LOG) $(COV_DIR)
 
 -include $(DEPS)
+
