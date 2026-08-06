@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="Tin" width="720">
+<h1>Tin</h1>
+
+> Hello? Does any one hear me??
 
 [![Language](https://img.shields.io/badge/language-C17-blue.svg)](https://en.wikipedia.org/wiki/C17_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](#requirements)
