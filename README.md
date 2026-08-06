@@ -19,6 +19,7 @@
 - [How It Works](#how-it-works)
 - [Requirements](#requirements)
 - [Building](#building)
+- [Demo](#demo)
 - [Usage](#usage)
   - [Roles](#roles)
   - [Capabilities](#capabilities)
@@ -119,6 +120,10 @@ files under `src/` and `include/` are picked up without editing the Makefile.
 ```sh
 make clean
 ```
+
+## Demo
+
+https://github.com/user-attachments/assets/26d96251-a732-42a7-bc55-c6e070809618
 
 ## Usage
 
