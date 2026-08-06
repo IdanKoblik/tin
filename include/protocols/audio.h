@@ -29,5 +29,9 @@ _Static_assert(
 void encode_audio_packet(const audio_packet *p, uint8_t *out);
 void decode_audio_packet(const uint8_t *data, audio_packet *out);
 
-int audio_packet_send(int fd, const audio_packet *packet, volatile sig_atomic_t *running);
-int audio_packet_recv(int fd, audio_packet *out, volatile sig_atomic_t *running);
+struct Node;
+
+// Frames travel encrypted under the session keys the handshake established, so
+// both ends go through the node packet layer rather than the socket directly.
+int audio_packet_send(struct Node *node, int fd, const audio_packet *packet, volatile sig_atomic_t *running);
+int audio_packet_recv(struct Node *node, int fd, audio_packet *out, volatile sig_atomic_t *running);

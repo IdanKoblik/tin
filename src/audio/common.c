@@ -34,7 +34,7 @@ static void run_capture_loop(struct Node *node, AudioDevice *dev, volatile sig_a
         packet.seq = seq++;
         memcpy(packet.data, buff, AUDIO_FRAME_BYTES);
 
-        if (!audio_packet_send(node->peer_fd, &packet, running))
+        if (!audio_packet_send(node, node->peer_fd, &packet, running))
             return;
 
         // Frames are paced at 20 ms, so this is one line per second of speech.
@@ -49,7 +49,7 @@ static void run_playback_loop(struct Node *node, AudioDevice *dev, volatile sig_
 
     while (running && *running) {
         audio_packet packet;
-        if (!audio_packet_recv(node->peer_fd, &packet, running))
+        if (!audio_packet_recv(node, node->peer_fd, &packet, running))
             return;
 
         if (packet.version != AUDIO_PACKET_VERSION) {
@@ -74,7 +74,7 @@ static void run_playback_loop(struct Node *node, AudioDevice *dev, volatile sig_
 void *run_audio(void *arg, volatile sig_atomic_t *running) {
     struct AudioThread *audio = arg;
 
-    if (audio->node->role == CLIENT)
+    if (audio->node->cap & AUDIO_CAPTURE)
         run_capture_loop(audio->node, audio->dev, running);
     else
         run_playback_loop(audio->node, audio->dev, running);

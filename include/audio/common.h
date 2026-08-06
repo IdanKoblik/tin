@@ -1,8 +1,10 @@
 #pragma once
 
+#include <linux/limits.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 // One frame of 20 ms, 48 kHz, 16-bit mono PCM audio. Every read and write
 // moves exactly this many bytes.
@@ -11,7 +13,7 @@
 
 typedef struct AudioDevice AudioDevice;
 
-AudioDevice *audio_create(void);
+AudioDevice *audio_create(const char *source);
 
 int audio_send(AudioDevice *device, const void *buffer, size_t bytes);
 int audio_receive(AudioDevice *device, void *buffer, size_t byte);
@@ -31,3 +33,10 @@ struct AudioThread {
 };
 
 void *run_audio(void *arg, volatile sig_atomic_t *running);
+
+struct AudioSource {
+    char name[MAX_INPUT];
+    char description[MAX_INPUT];
+};
+
+struct AudioSource *fetch_audio_sources(size_t *out_count);

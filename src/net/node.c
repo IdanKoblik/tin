@@ -1,4 +1,6 @@
 #include "net/node.h"
+#include <errno.h>
+#include <sodium/crypto_aead_chacha20poly1305.h>
 #include <sodium/utils.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -6,6 +8,7 @@
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <sodium.h>
+#include "crypto/buffer.h"
 #include "logging/log.h"
 #include "net/client.h"
 #include "net/role.h"
@@ -137,6 +140,107 @@ int node_handshake(struct Node *node, volatile sig_atomic_t *running) {
     }
 
     return 1;
+}
+
+static int send_all(int fd, const uint8_t *buf, size_t n, int flags) {
+    size_t sent = 0;
+
+    while (sent < n) {
+        ssize_t written = send(fd, buf + sent, n - sent, flags);
+        if (written < 0) {
+            if (errno == EINTR)
+                continue;
+
+            if (errno == EPIPE)
+                return 0;
+
+            return -1;
+        }
+
+        sent += (size_t)written;
+    }
+
+    return 1;
+}
+
+static int recv_all(int fd, uint8_t *buf, size_t n, int flags) {
+    size_t received = 0;
+
+    while (received < n) {
+        ssize_t got = recv(fd, buf + received, n - received, flags);
+        if (got < 0) {
+            if (errno == EINTR)
+                continue;
+
+            return -1;
+        }
+
+        if (got == 0)
+            return 0;
+
+        received += (size_t)got;
+    }
+
+    return 1;
+}
+
+ssize_t node_send_packet(struct Node *node, int fd, const uint8_t *buf, size_t n, int flags) {
+    if (!node || !buf || n == 0) {
+        ERROR("Cannot send a packet from null or empty arguments");
+        return -1;
+    }
+
+    uint8_t packet[NODE_PACKET_OVERHEAD + n];
+    uint8_t *nonce = packet;
+    uint8_t *ciphertext = packet + NODE_PACKET_NONCE_BYTES;
+
+    randombytes_buf(nonce, NODE_PACKET_NONCE_BYTES);
+
+    unsigned long long cipher_len = 0;
+    if (encrypt_buffer(ciphertext, &cipher_len, buf, n, nonce, node->session_tx) != 0) {
+        ERROR("Failed to encrypt buffer");
+        return -1;
+    }
+
+    int rc = send_all(fd, packet, NODE_PACKET_NONCE_BYTES + (size_t)cipher_len, flags);
+    if (rc < 0) {
+        ERROR("Cannot send packet to peer");
+        return -1;
+    }
+
+    if (rc == 0) {
+        INFO("Peer closed the connection");
+        return 0;
+    }
+
+    return (ssize_t)n;
+}
+
+ssize_t node_recv_packet(struct Node *node, int fd, uint8_t *buf, size_t n, int flags) {
+    if (!node || !buf || n == 0) {
+        ERROR("Cannot receive a packet into null or empty arguments");
+        return -1;
+    }
+
+    uint8_t packet[NODE_PACKET_OVERHEAD + n];
+    int rc = recv_all(fd, packet, sizeof(packet), flags);
+    if (rc < 0) {
+        ERROR("Cannot receive packet from peer");
+        return -1;
+    }
+
+    if (rc == 0) {
+        INFO("Peer closed the connection");
+        return 0;
+    }
+
+    unsigned long long plaintext_len = 0;
+    if (decrypt_buffer(buf, &plaintext_len, packet + NODE_PACKET_NONCE_BYTES, sizeof(packet) - NODE_PACKET_NONCE_BYTES, packet, node->session_rx) != 0) {
+        ERROR("Failed to decrypt packet from peer");
+        return -1;
+    }
+
+    return (ssize_t)plaintext_len;
 }
 
 void node_close_peer(struct Node *node) {
