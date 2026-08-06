@@ -9,8 +9,11 @@ OBJ_DIR := build
 BIN     := tin
 LOG     := tin.log
 
-CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -I$(INC_DIR) $(SODIUM_CFLAGS)
-LDLIBS  := -lncurses -ludev -lpulse-simple -lpulse $(SODIUM_LIBS)
+AUDIO_CFLAGS := -DUSE_PULSE
+AUDIO_LIBS   := -lpulse-simple -lpulse
+
+CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -pthread -I$(INC_DIR) $(SODIUM_CFLAGS) $(AUDIO_CFLAGS)
+LDLIBS  := -lncurses -ludev -pthread $(AUDIO_LIBS) $(SODIUM_LIBS)
 
 # Sources and headers are discovered recursively, so new subdirectories under
 # src/ and include/ are picked up without touching this file.
@@ -36,9 +39,9 @@ CLANG_FORMAT := clang-format
 FORMAT_SRCS := $(HDRS) $(SRCS) $(filter-out $(TEST_DIR)/greatest.h,$(shell find $(TEST_DIR) -name '*.h')) \
                $(TEST_SRCS)
 
-.PHONY: all clean test coverage logs format format-check
+.PHONY: all clean test coverage logs format format-check compdb
 
-all: $(BIN)
+all: $(BIN) compile_commands.json
 
 $(BIN): $(OBJS)
 	$(CC) $(OBJS) -o $@ $(LDLIBS)
@@ -46,6 +49,21 @@ $(BIN): $(OBJS)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# compile_commands.json for clangd/IDEs. Rebuilt by `all` whenever a source is
+# added or CFLAGS change, so clangd never falls back to flags without -I$(INC_DIR).
+compdb: compile_commands.json
+
+compile_commands.json: $(SRCS) $(TEST_SRCS) Makefile
+	@printf '[\n' > compile_commands.json
+	@sep=""; for f in $(SRCS) $(TEST_SRCS); do \
+		printf '%s  {"directory": "%s", "file": "%s", "command": "%s %s -I%s -c %s"}\n' \
+			"$$sep" "$(CURDIR)" "$$f" \
+			"$(CC)" "$(CFLAGS)" "$(TEST_DIR)" "$$f" >> compile_commands.json; \
+		sep=","; \
+	done
+	@printf ']\n' >> compile_commands.json
+	@echo "Wrote compile_commands.json ($(words $(SRCS) $(TEST_SRCS)) entries)"
 
 logs:
 	journalctl -t $(BIN) -o short-iso > $(LOG)

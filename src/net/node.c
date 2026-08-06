@@ -3,12 +3,21 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <sodium.h>
 #include "logging/log.h"
 #include "net/client.h"
 #include "net/role.h"
 #include "net/server.h"
+
+// Audio frames are small and paced at 20 ms, so Nagle's algorithm would hold
+// each one back waiting for the previous frame's ACK.
+static void disable_nagle(int fd) {
+    int on = 1;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0)
+        WARN("Failed to disable Nagle on peer socket; audio latency may suffer");
+}
 
 int node_init(struct Node *node, const char *addr, uint16_t port) {
     if (!node) {
@@ -53,8 +62,13 @@ int node_listen(struct Node *node) {
         return 0;
     }
 
-    if ((listen(node->sock_fd, 1)) != 0) {
+    if (listen(node->sock_fd, 1) != 0) {
         ERROR("Failed to listen to the socket");
+        return 0;
+    }
+
+    if (node->peer_fd != -1) {
+        WARN("Someone tried to also connect");
         return 0;
     }
 
@@ -64,6 +78,8 @@ int node_listen(struct Node *node) {
         ERROR("Failed to accept a peer connection");
         return 0;
     }
+
+    disable_nagle(node->peer_fd);
 
     INFO("Peer connected from: %s:%d", inet_ntoa(node->peer.sin_addr), ntohs(node->peer.sin_port));
     return 1;
@@ -106,6 +122,8 @@ int node_connect(struct Node *node) {
 
     node->peer = node->server_addr;
     node->peer_fd = node->sock_fd;
+
+    disable_nagle(node->peer_fd);
 
     INFO("Connected to peer: %s:%d", inet_ntoa(node->peer.sin_addr), ntohs(node->peer.sin_port));
     return 1;
