@@ -1,6 +1,6 @@
-#include "server.h"
-#include "../logging/log.h"
-#include "../protocols/handshake.h"
+#include "net/server.h"
+#include "logging/log.h"
+#include "protocols/handshake.h"
 #include <sodium/crypto_kx.h>
 #include <sodium/utils.h>
 

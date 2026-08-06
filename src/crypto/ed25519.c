@@ -1,9 +1,8 @@
-#include "ed25519.h"
-#include "../net/node.h"
-#include "../logging/log.h"
+#include "crypto/ed25519.h"
+#include "net/node.h"
+#include "logging/log.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <sodium/crypto_sign.h>
 #include <stdio.h>
 #include <string.h>

@@ -3,20 +3,24 @@ CC      := cc
 SODIUM_CFLAGS := $(shell pkg-config --cflags libsodium)
 SODIUM_LIBS   := $(shell pkg-config --libs libsodium)
 
-CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -Isrc $(SODIUM_CFLAGS)
-LDLIBS  := -lncurses -ludev -lpulse-simple -lpulse $(SODIUM_LIBS)
-
+INC_DIR := include
 SRC_DIR := src
 OBJ_DIR := build
 BIN     := tin
 LOG     := tin.log
 
+CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -I$(INC_DIR) $(SODIUM_CFLAGS)
+LDLIBS  := -lncurses -ludev -lpulse-simple -lpulse $(SODIUM_LIBS)
+
+# Sources and headers are discovered recursively, so new subdirectories under
+# src/ and include/ are picked up without touching this file.
 SRCS := $(shell find $(SRC_DIR) -name '*.c')
+HDRS := $(shell find $(INC_DIR) -name '*.h')
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
 TEST_DIR  := tests
-TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_SRCS := $(shell find $(TEST_DIR) -name '*.c')
 TEST_BIN  := $(OBJ_DIR)/test_runner
 # Link every production object except main.o (which owns its own main()).
 TEST_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS))
@@ -29,8 +33,8 @@ COV_OBJS := $(COV_SRCS:%.c=$(COV_OBJ)/%.o)
 
 CLANG_FORMAT := clang-format
 # greatest.h is vendored third-party; leave it alone.
-FORMAT_SRCS := $(shell find $(SRC_DIR) $(TEST_DIR) -name '*.c' -o -name '*.h' \
-                 | grep -v '^$(TEST_DIR)/greatest\.h$$')
+FORMAT_SRCS := $(HDRS) $(SRCS) $(filter-out $(TEST_DIR)/greatest.h,$(shell find $(TEST_DIR) -name '*.h')) \
+               $(TEST_SRCS)
 
 .PHONY: all clean test coverage logs format format-check
 

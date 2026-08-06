@@ -1,9 +1,9 @@
-#include "handshake.h"
+#include "protocols/handshake.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
-#include "packet.h"
-#include "../logging/log.h"
+#include "protocols/packet.h"
+#include "logging/log.h"
 
 void encode_handshake_packet(const handshake_packet *p, uint8_t *out) {
     size_t offset = 0;

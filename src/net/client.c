@@ -1,8 +1,8 @@
-#include "client.h"
+#include "net/client.h"
 #include <sodium/crypto_kx.h>
 #include <sodium/utils.h>
-#include "../logging/log.h"
-#include "../protocols/handshake.h"
+#include "logging/log.h"
+#include "protocols/handshake.h"
 
 int client_handshake(struct Node *node, volatile sig_atomic_t *running) {
     if (!node) {

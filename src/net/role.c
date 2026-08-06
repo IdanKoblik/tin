@@ -1,4 +1,4 @@
-#include "role.h"
+#include "net/role.h"
 
 enum Role string_to_role(const char *str) {
     if (!strcmp(str, "host"))

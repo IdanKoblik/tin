@@ -1,7 +1,7 @@
 #pragma once
 
-#include "role.h"
-#include "../crypto/ed25519.h"
+#include "net/role.h"
+#include "crypto/ed25519.h"
 #include <sodium.h>
 #include <netinet/in.h>
 #include <signal.h>

@@ -12,18 +12,18 @@
 
 #define DEFAULT_PORT (uint16_t)6969
 
-volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t running = 1;
 
-void handle_signal(int sig) {
+static void handle_signal(int sig) {
     (void)sig;
     running = 0;
 }
 
-void usage() {
+static void usage() {
     printf("./tin <role (host | connect)> <addr>\n");
 }
 
-char *get_tin_config_path(void) {
+static char *get_tin_config_path(void) {
     const char *home = getenv("HOME");
 
     if (!home) {

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../net/node.h"
-#include "../crypto/ed25519.h"
+#include "net/node.h"
+#include "crypto/ed25519.h"
 #include <signal.h>
 #include <sodium.h>
 

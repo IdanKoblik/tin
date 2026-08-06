@@ -1,14 +1,14 @@
-#include "node.h"
+#include "net/node.h"
 #include <sodium/utils.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sodium.h>
-#include "../logging/log.h"
-#include "client.h"
-#include "role.h"
-#include "server.h"
+#include "logging/log.h"
+#include "net/client.h"
+#include "net/role.h"
+#include "net/server.h"
 
 int node_init(struct Node *node, const char *addr, uint16_t port) {
     if (!node) {

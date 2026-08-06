@@ -1,4 +1,5 @@
 # Local
+.idea/*
 build/*
 tin
 compile_commands.json
