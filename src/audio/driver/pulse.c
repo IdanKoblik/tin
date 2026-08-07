@@ -17,8 +17,6 @@ static const pa_sample_spec SPEC = {
     .channels = 1,
 };
 
-// Latency tuning. PulseAudio's defaults favour throughput over latency, which
-// adds delay we cannot afford on a live call.
 static const pa_buffer_attr PLAYBACK_ATTR = {
     .maxlength = (uint32_t)-1,
     .tlength = AUDIO_FRAME_BYTES * 4, // keep ~80 ms queued to absorb jitter
@@ -29,7 +27,7 @@ static const pa_buffer_attr PLAYBACK_ATTR = {
 
 static const pa_buffer_attr CAPTURE_ATTR = {
     .maxlength = (uint32_t)-1,
-    .fragsize = AUDIO_FRAME_BYTES, // hand us exactly one frame per read
+    .fragsize = AUDIO_FRAME_BYTES, // exactly one frame per read
     .tlength = (uint32_t)-1,
     .prebuf = (uint32_t)-1,
     .minreq = (uint32_t)-1,
