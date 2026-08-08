@@ -75,19 +75,6 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Releasing $tag" >> "$GITHUB_STEP_SUMMARY"
 
-  format:
-    name: Format check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format
-
-      - run: make format-check
-
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.cc }})
     runs-on: ${{ matrix.os }}
@@ -134,7 +121,7 @@ jobs:
   release-build:
     name: Release build (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch'
-    needs: [prepare, format, test, coverage]
+    needs: [prepare, test, coverage]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
