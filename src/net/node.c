@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <unistd.h>
 #include <sodium.h>
 #include "crypto/buffer.h"
@@ -13,6 +14,31 @@
 #include "net/client.h"
 #include "net/role.h"
 #include "net/server.h"
+
+#define NODE_IO_POLL_TIMEOUT_MS 200
+
+static int node_stopping(const struct Node *node) {
+    return node->running && !*node->running;
+}
+
+static int wait_ready(const struct Node *node, int fd, short events) {
+    while (1) {
+        if (node_stopping(node))
+            return 0;
+
+        struct pollfd pfd = {.fd = fd, .events = events};
+        int ready = poll(&pfd, 1, NODE_IO_POLL_TIMEOUT_MS);
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+
+            return -1;
+        }
+
+        if (ready > 0)
+            return 1;
+    }
+}
 
 // Audio frames are small and paced at 20 ms, so Nagle's algorithm would hold
 // each one back waiting for the previous frame's ACK.
@@ -31,9 +57,16 @@ int node_init(struct Node *node, const char *addr, uint16_t port) {
     sodium_memzero(node, sizeof(*node));
     node->peer_fd = -1;
 
+    int err = pthread_mutex_init(&node->send_lock, NULL);
+    if (err) {
+        ERROR("Failed to create the send lock: %s", strerror(err));
+        return 0;
+    }
+
     node->sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (node->sock_fd == -1) {
         ERROR("Failed to create tcp socket");
+        pthread_mutex_destroy(&node->send_lock);
         return 0;
     }
 
@@ -44,12 +77,22 @@ int node_init(struct Node *node, const char *addr, uint16_t port) {
 
     if (inet_pton(AF_INET, addr, &(node->server_addr.sin_addr.s_addr)) < 0) {
         ERROR("failed to parse addr");
+        close(node->sock_fd);
+        node->sock_fd = -1;
+        pthread_mutex_destroy(&node->send_lock);
         return 0;
     }
 
     node->server_ip = addr;
     node->server_port = port;
     return 1;
+}
+
+void node_set_running(struct Node *node, volatile sig_atomic_t *running) {
+    if (!node)
+        return;
+
+    node->running = running;
 }
 
 int node_listen(struct Node *node) {
@@ -72,6 +115,17 @@ int node_listen(struct Node *node) {
 
     if (node->peer_fd != -1) {
         WARN("Someone tried to also connect");
+        return 0;
+    }
+
+    int ready = wait_ready(node, node->sock_fd, POLLIN);
+    if (ready < 0) {
+        ERROR("Failed to wait for a peer connection");
+        return 0;
+    }
+
+    if (ready == 0) {
+        INFO("Stopped waiting for a peer connection");
         return 0;
     }
 
@@ -142,10 +196,14 @@ int node_handshake(struct Node *node, volatile sig_atomic_t *running) {
     return 1;
 }
 
-static int send_all(int fd, const uint8_t *buf, size_t n, int flags) {
+static int send_all(const struct Node *node, int fd, const uint8_t *buf, size_t n, int flags) {
     size_t sent = 0;
 
     while (sent < n) {
+        int ready = wait_ready(node, fd, POLLOUT);
+        if (ready <= 0)
+            return ready;
+
         ssize_t written = send(fd, buf + sent, n - sent, flags);
         if (written < 0) {
             if (errno == EINTR)
@@ -163,10 +221,14 @@ static int send_all(int fd, const uint8_t *buf, size_t n, int flags) {
     return 1;
 }
 
-static int recv_all(int fd, uint8_t *buf, size_t n, int flags) {
+static int recv_all(const struct Node *node, int fd, uint8_t *buf, size_t n, int flags) {
     size_t received = 0;
 
     while (received < n) {
+        int ready = wait_ready(node, fd, POLLIN);
+        if (ready <= 0)
+            return ready;
+
         ssize_t got = recv(fd, buf + received, n - received, flags);
         if (got < 0) {
             if (errno == EINTR)
@@ -202,14 +264,19 @@ ssize_t node_send_packet(struct Node *node, int fd, const uint8_t *buf, size_t n
         return -1;
     }
 
-    int rc = send_all(fd, packet, NODE_PACKET_NONCE_BYTES + (size_t)cipher_len, flags);
+    pthread_mutex_lock(&node->send_lock);
+    int rc = send_all(node, fd, packet, NODE_PACKET_NONCE_BYTES + (size_t)cipher_len, flags);
+    pthread_mutex_unlock(&node->send_lock);
+
     if (rc < 0) {
         ERROR("Cannot send packet to peer");
         return -1;
     }
 
     if (rc == 0) {
-        INFO("Peer closed the connection");
+        if (!node_stopping(node))
+            INFO("Peer closed the connection");
+
         return 0;
     }
 
@@ -223,14 +290,16 @@ ssize_t node_recv_packet(struct Node *node, int fd, uint8_t *buf, size_t n, int 
     }
 
     uint8_t packet[NODE_PACKET_OVERHEAD + n];
-    int rc = recv_all(fd, packet, sizeof(packet), flags);
+    int rc = recv_all(node, fd, packet, sizeof(packet), flags);
     if (rc < 0) {
         ERROR("Cannot receive packet from peer");
         return -1;
     }
 
     if (rc == 0) {
-        INFO("Peer closed the connection");
+        if (!node_stopping(node))
+            INFO("Peer closed the connection");
+
         return 0;
     }
 
@@ -241,6 +310,14 @@ ssize_t node_recv_packet(struct Node *node, int fd, uint8_t *buf, size_t n, int 
     }
 
     return (ssize_t)plaintext_len;
+}
+
+void node_shutdown_peer(struct Node *node) {
+    if (!node || node->peer_fd == -1)
+        return;
+
+    DEBUG("Shutting down peer connection");
+    shutdown(node->peer_fd, SHUT_RDWR);
 }
 
 void node_close_peer(struct Node *node) {
@@ -270,4 +347,6 @@ void node_cleanup(struct Node *node) {
         close(node->sock_fd);
         node->sock_fd = -1;
     }
+
+    pthread_mutex_destroy(&node->send_lock);
 }

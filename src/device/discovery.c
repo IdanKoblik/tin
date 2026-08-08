@@ -1,12 +1,14 @@
 #include "device/discovery.h"
 
+#include "ui.h"
+
 #include <libudev.h>
 #include <stdlib.h>
 #include <string.h>
-#include <linux/input.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <linux/input.h>
 
 #include "logging/log.h"
 
@@ -55,7 +57,7 @@ static int is_real_keyboard(const char *devnode) {
     return BIT_SET(key_bits, KEY_A) && BIT_SET(key_bits, KEY_Z) && BIT_SET(key_bits, KEY_SPACE) && BIT_SET(key_bits, KEY_ENTER);
 }
 
-struct device_entry *fetch_devices(enum devices types, size_t *out_count) {
+struct device_entry *fetch_devices(enum device_type type, size_t *out_count) {
     if (out_count) *out_count = 0;
 
     struct udev *udev = udev_new();
@@ -93,8 +95,8 @@ struct device_entry *fetch_devices(enum devices types, size_t *out_count) {
             udev_device_get_parent_with_subsystem_devtype(dev, "input", NULL);
         const char *name = parent ? udev_device_get_sysattr_value(parent, "name") : NULL;
 
-        int kbd_match = (types & KEYBOARD) && node && is_real_keyboard(node);
-        int mouse_match = (types & MOUSE) && node && is_real_mouse(node);
+        int kbd_match = (type == KEYBOARD) && node && is_real_keyboard(node);
+        int mouse_match = (type == MOUSE) && node && is_real_mouse(node);
 
         if (node && name && (kbd_match || mouse_match) && strstr(node, "/event")) {
             if (count >= capacity)
@@ -121,3 +123,39 @@ struct device_entry *fetch_devices(enum devices types, size_t *out_count) {
     return list;
 }
 
+int open_selected_device(enum device_type type, const char *label) {
+    size_t count = 0;
+    struct device_entry *list = fetch_devices(type, &count);
+    if (!list) {
+        ERROR("no %s devices available", label);
+        return -1;
+    }
+
+    char title[64];
+    snprintf(title, sizeof(title), "Select %s", label);
+
+    char lines[count][sizeof(list[0].name) + sizeof(list[0].devnode) + 8];
+    const char *options[count];
+    for (size_t i = 0; i < count; i++) {
+        snprintf(lines[i], sizeof(lines[i]), "%s -> %s",
+                 list[i].name, list[i].devnode);
+        options[i] = lines[i];
+    }
+
+    int idx = select_menu(title, options, count);
+    if (idx < 0) {
+        free(list);
+        return -1;
+    }
+
+    printf("selected: %s -> %s\n", list[idx].name, list[idx].devnode);
+
+    int fd = open(list[idx].devnode, O_RDONLY | O_NONBLOCK);
+    free(list);
+    if (fd < 0) {
+        ERROR("failed to open %s device (need read permission, e.g. input group or root)", label);
+        return -1;
+    }
+
+    return fd;
+}

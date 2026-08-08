@@ -15,6 +15,8 @@
 #include "logging/log.h"
 #include "net/node.h"
 #include "net/role.h"
+#include "device/discovery.h"
+#include "device/virtual.h"
 
 #define DEFAULT_PORT (uint16_t)6969
 
@@ -50,6 +52,22 @@ static char *get_tin_config_path(void) {
     return path;
 }
 
+struct AudioLink {
+    struct Node *node;
+    const char *source;
+    volatile sig_atomic_t *running;
+};
+
+static void *run_audio_link(void *arg) {
+    struct AudioLink *link = arg;
+
+    if (!handle_audio(link->node, link->source, link->running))
+        ERROR("The audio link stopped early");
+
+    *link->running = 0;
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     openlog(NULL, LOG_PID | LOG_PERROR, LOG_USER);
     if (argc < 4) {
@@ -57,8 +75,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Picks the CPU-specific implementations and seeds the RNG. Nothing else
-    // in libsodium is safe to call before this returns.
     if (sodium_init() < 0) {
         ERROR("Failed to initialise libsodium");
         return 1;
@@ -69,6 +85,14 @@ int main(int argc, char *argv[]) {
     sa.sa_flags = 0;
     sa.sa_handler = handle_signal;
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    struct sigaction ignore;
+    sigemptyset(&ignore.sa_mask);
+    ignore.sa_flags = 0;
+    ignore.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &ignore, NULL);
 
     enum Role role = string_to_role(argv[1]);
     if (role == UNKNOWN) {
@@ -82,17 +106,39 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char *audio_source = "tinphones-pro-max-xl";
+    struct Node node;
+    int node_ready = 0;
+
+    int keyboard_fd = -1;
+    int mouse_fd = -1;
+
+    const char *audio_source = "tinphones-pro-max-xl";
+    char *picked_source = NULL;
     if (cap & AUDIO_CAPTURE) {
-        audio_source = prompt_audio_source();
-        if (!audio_source)
+        picked_source = prompt_audio_source();
+        if (!picked_source)
             goto cleanup;
+
+        audio_source = picked_source;
     }
 
-    struct Display display;
-    if (cap & INPUT_ANY) {
-        if (!display_init(&display))
+    struct Display display = {0};
+    if ((cap & INPUT_ANY) && !display_init(&display))
+        WARN("Could not read the display size, continuing without it");
+
+    if (cap & INPUT_SEND) {
+        keyboard_fd = open_selected_device(KEYBOARD, "keyboard");
+        if (keyboard_fd < 0)
+            WARN("No keyboard selected, only the mouse will be shared");
+
+        mouse_fd = open_selected_device(MOUSE, "mouse");
+        if (mouse_fd < 0)
+            WARN("No mouse selected, only the keyboard will be shared");
+
+        if (keyboard_fd < 0 && mouse_fd < 0) {
+            ERROR("input-send needs at least one device to capture from");
             goto cleanup;
+        }
     }
 
     const char *ip = argv[2];
@@ -104,14 +150,18 @@ int main(int argc, char *argv[]) {
         port = (uint16_t)strtoul(colon + 1, NULL, 10);
     }
 
-    struct Node node;
     if (!node_init(&node, ip, port))
         goto cleanup;
 
+    node_ready = 1;
     node.role = role;
     node.cap = cap;
+    node_set_running(&node, &running);
+
     char *cfg_path = get_tin_config_path();
-    if (!key_pair_load(cfg_path, &node)) {
+    int keys_loaded = key_pair_load(cfg_path, &node);
+    free(cfg_path);
+    if (!keys_loaded) {
         ERROR("Failed to load ed25519 key pair");
         goto cleanup;
     }
@@ -129,13 +179,44 @@ int main(int argc, char *argv[]) {
 
     INFO("Node is up and running!");
 
+    pthread_t audio_tid;
+    int audio_started = 0;
+    struct AudioLink audio = {.node = &node, .source = audio_source, .running = &running};
+
     if (node.cap & AUDIO_ANY) {
-        if (!handle_audio(&node, audio_source, &running))
+        int err = pthread_create(&audio_tid, NULL, run_audio_link, &audio);
+        if (err) {
+            ERROR("Failed to start the audio link: %s", strerror(err));
             goto cleanup;
+        }
+
+        audio_started = 1;
     }
 
+    if (node.cap & INPUT_ANY) {
+        if (handle_input(&node, mouse_fd, keyboard_fd, &running) < 0)
+            ERROR("Cannot handle input");
+
+        running = 0;
+        node_shutdown_peer(&node);
+    }
+
+    if (audio_started)
+        pthread_join(audio_tid, NULL);
+
 cleanup:
+    running = 0;
+
+    if (keyboard_fd >= 0)
+        close(keyboard_fd);
+
+    if (mouse_fd >= 0)
+        close(mouse_fd);
+
+    if (node_ready)
+        node_cleanup(&node);
+
+    free(picked_source);
     closelog();
-    node_cleanup(&node);
     return 0;
 }
