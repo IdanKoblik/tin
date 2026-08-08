@@ -2,7 +2,9 @@
 #include "protocols/audio.h"
 #include "net/node.h"
 #include "logging/log.h"
+#include "ui.h"
 #include <signal.h>
+#include <pthread.h>
 
 #ifndef USE_PULSE
 #error "No audio backend selected (define USE_PULSE)"
@@ -71,13 +73,13 @@ static void run_playback_loop(struct Node *node, AudioDevice *dev, volatile sig_
     }
 }
 
-void *run_audio(void *arg, volatile sig_atomic_t *running) {
+void *run_audio(void *arg) {
     struct AudioThread *audio = arg;
 
     if (audio->node->cap & AUDIO_CAPTURE)
-        run_capture_loop(audio->node, audio->dev, running);
+        run_capture_loop(audio->node, audio->dev, audio->running);
     else
-        run_playback_loop(audio->node, audio->dev, running);
+        run_playback_loop(audio->node, audio->dev, audio->running);
 
     return NULL;
 }
@@ -94,4 +96,54 @@ int audio_frame_is_silent(const int16_t *samples, size_t count) {
     }
 
     return energy / (double)count <= AUDIO_SILENCE_RMS * AUDIO_SILENCE_RMS;
+}
+
+char *prompt_audio_source(void) {
+    size_t count = 0;
+    struct AudioSource *list = fetch_audio_sources(&count);
+    if (!list) {
+        ERROR("no audio sources available");
+        return NULL;
+    }
+
+    char lines[count][sizeof(list[0].description) + sizeof(list[0].name) + 8];
+    const char *options[count];
+    for (size_t i = 0; i < count; i++) {
+        snprintf(lines[i], sizeof(lines[i]), "%s -> %s", list[i].description[0] ? list[i].description : list[i].name, list[i].name);
+        options[i] = lines[i];
+    }
+
+    int idx = select_menu("Select audio source", options, count);
+    if (idx < 0) {
+        free(list);
+        return NULL;
+    }
+
+    printf("selected: %s\n", list[idx].name);
+    char *picked = strdup(list[idx].name);
+    free(list);
+    return picked;
+}
+
+int handle_audio(struct Node *node, const char *source, volatile sig_atomic_t *running) {
+    AudioDevice *dev = audio_create(source);
+    if (!dev) {
+        ERROR("Failed to create audio device");
+        return 0;
+    }
+
+    pthread_t audio_tid;
+    struct AudioThread audio = {.node = node, .dev = dev, .running = running};
+
+    int err = pthread_create(&audio_tid, NULL, run_audio, &audio);
+    if (err) {
+        ERROR("Failed to start the audio thread: %s", strerror(err));
+        audio_destroy(dev);
+        return 0;
+    }
+
+    pthread_join(audio_tid, NULL);
+
+    audio_destroy(dev);
+    return 1;
 }

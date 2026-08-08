@@ -11,61 +11,23 @@
 #include "audio/common.h"
 #include "capability.h"
 #include "crypto/ed25519.h"
+#include "display/common.h"
 #include "logging/log.h"
 #include "net/node.h"
 #include "net/role.h"
-#include "ui.h"
 
 #define DEFAULT_PORT (uint16_t)6969
 
 static volatile sig_atomic_t running = 1;
 
-// The audio thread spends most of its life parked in a blocking recv() or
-// write() that clearing the flag cannot wake, so the handler tears the socket
-// down too. shutdown() is async-signal-safe; close() here would not be, since
-// the fd is still in use on the other thread.
-static volatile sig_atomic_t audio_fd = -1;
-
 static void handle_signal(int sig) {
     (void)sig;
     running = 0;
-    if (audio_fd >= 0)
-        shutdown((int)audio_fd, SHUT_RDWR);
 }
 
 static void usage() {
-    printf("./tin <role (host | connect)> <addr> <caps (mic | speaker | input, comma separated)>\n");
-}
-
-void *audio_thread(void *arg) {
-    return run_audio(arg, &running);
-}
-
-static char *prompt_audio_source(void) {
-    size_t count = 0;
-    struct AudioSource *list = fetch_audio_sources(&count);
-    if (!list) {
-        ERROR("no audio sources available");
-        return NULL;
-    }
-
-    char lines[count][sizeof(list[0].description) + sizeof(list[0].name) + 8];
-    const char *options[count];
-    for (size_t i = 0; i < count; i++) {
-        snprintf(lines[i], sizeof(lines[i]), "%s -> %s", list[i].description[0] ? list[i].description : list[i].name, list[i].name);
-        options[i] = lines[i];
-    }
-
-    int idx = select_menu("Select audio source", options, count);
-    if (idx < 0) {
-        free(list);
-        return NULL;
-    }
-
-    printf("selected: %s\n", list[idx].name);
-    char *picked = strdup(list[idx].name);
-    free(list);
-    return picked;
+    printf("./tin <role (host | connect)> <addr> <caps (mic | speaker | input-send | "
+           "input-recv, comma separated)>\n");
 }
 
 static char *get_tin_config_path(void) {
@@ -123,6 +85,14 @@ int main(int argc, char *argv[]) {
     char *audio_source = "tinphones-pro-max-xl";
     if (cap & AUDIO_CAPTURE) {
         audio_source = prompt_audio_source();
+        if (!audio_source)
+            goto cleanup;
+    }
+
+    struct Display display;
+    if (cap & INPUT_ANY) {
+        if (!display_init(&display))
+            goto cleanup;
     }
 
     const char *ip = argv[2];
@@ -160,30 +130,12 @@ int main(int argc, char *argv[]) {
     INFO("Node is up and running!");
 
     if (node.cap & AUDIO_ANY) {
-        AudioDevice *dev = audio_create(audio_source);
-        if (!dev) {
-            ERROR("Failed to create audio device");
+        if (!handle_audio(&node, audio_source, &running))
             goto cleanup;
-        }
-
-        pthread_t audio_tid;
-        struct AudioThread audio = {.node = &node, .dev = dev};
-
-        audio_fd = node.peer_fd;
-        int err = pthread_create(&audio_tid, NULL, audio_thread, &audio);
-        if (err) {
-            ERROR("Failed to start the audio thread: %s", strerror(err));
-            audio_destroy(dev);
-            goto cleanup;
-        }
-
-        pthread_join(audio_tid, NULL);
-        audio_fd = -1;
-
-        audio_destroy(dev);
     }
 
 cleanup:
+    closelog();
     node_cleanup(&node);
     return 0;
 }
