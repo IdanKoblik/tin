@@ -2,7 +2,7 @@
 
 <h1>Tin</h1>
 
-> Hello? Does any one hear me??
+> Hello? Does anyone hear me??
 
 [![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![Language](https://img.shields.io/badge/language-C17-blue.svg)](https://en.wikipedia.org/wiki/C17_(C_standard_revision))
