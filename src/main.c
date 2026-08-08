@@ -11,61 +11,28 @@
 #include "audio/common.h"
 #include "capability.h"
 #include "crypto/ed25519.h"
+#include "display/common.h"
 #include "logging/log.h"
 #include "net/node.h"
 #include "net/role.h"
-#include "ui.h"
+#include "device/discovery.h"
+#include "device/virtual.h"
 
 #define DEFAULT_PORT (uint16_t)6969
 
 static volatile sig_atomic_t running = 1;
 
-// The audio thread spends most of its life parked in a blocking recv() or
-// write() that clearing the flag cannot wake, so the handler tears the socket
-// down too. shutdown() is async-signal-safe; close() here would not be, since
-// the fd is still in use on the other thread.
-static volatile sig_atomic_t audio_fd = -1;
-
 static void handle_signal(int sig) {
     (void)sig;
     running = 0;
-    if (audio_fd >= 0)
-        shutdown((int)audio_fd, SHUT_RDWR);
 }
 
 static void usage() {
-    printf("./tin <role (host | connect)> <addr> <caps (mic | speaker | input, comma separated)>\n");
-}
-
-void *audio_thread(void *arg) {
-    return run_audio(arg, &running);
-}
-
-static char *prompt_audio_source(void) {
-    size_t count = 0;
-    struct AudioSource *list = fetch_audio_sources(&count);
-    if (!list) {
-        ERROR("no audio sources available");
-        return NULL;
-    }
-
-    char lines[count][sizeof(list[0].description) + sizeof(list[0].name) + 8];
-    const char *options[count];
-    for (size_t i = 0; i < count; i++) {
-        snprintf(lines[i], sizeof(lines[i]), "%s -> %s", list[i].description[0] ? list[i].description : list[i].name, list[i].name);
-        options[i] = lines[i];
-    }
-
-    int idx = select_menu("Select audio source", options, count);
-    if (idx < 0) {
-        free(list);
-        return NULL;
-    }
-
-    printf("selected: %s\n", list[idx].name);
-    char *picked = strdup(list[idx].name);
-    free(list);
-    return picked;
+    printf("./tin <role (host | connect)> <addr> <caps (mic | speaker | input-send | "
+           "input-recv, comma separated)> [edge (left | right | top | bottom)]\n");
+    printf("\n  edge  input-send only: the screen side that hands the input to the peer.\n");
+    printf("        Push the pointer into it to take the peer over, push back out to\n");
+    printf("        come home. Left out, every event goes to both machines at once.\n");
 }
 
 static char *get_tin_config_path(void) {
@@ -88,6 +55,22 @@ static char *get_tin_config_path(void) {
     return path;
 }
 
+struct AudioLink {
+    struct Node *node;
+    const char *source;
+    volatile sig_atomic_t *running;
+};
+
+static void *run_audio_link(void *arg) {
+    struct AudioLink *link = arg;
+
+    if (!handle_audio(link->node, link->source, link->running))
+        ERROR("The audio link stopped early");
+
+    *link->running = 0;
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     openlog(NULL, LOG_PID | LOG_PERROR, LOG_USER);
     if (argc < 4) {
@@ -95,8 +78,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Picks the CPU-specific implementations and seeds the RNG. Nothing else
-    // in libsodium is safe to call before this returns.
     if (sodium_init() < 0) {
         ERROR("Failed to initialise libsodium");
         return 1;
@@ -107,6 +88,14 @@ int main(int argc, char *argv[]) {
     sa.sa_flags = 0;
     sa.sa_handler = handle_signal;
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    struct sigaction ignore;
+    sigemptyset(&ignore.sa_mask);
+    ignore.sa_flags = 0;
+    ignore.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &ignore, NULL);
 
     enum Role role = string_to_role(argv[1]);
     if (role == UNKNOWN) {
@@ -120,9 +109,51 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char *audio_source = "tinphones-pro-max-xl";
+    enum Edge edge = EDGE_NONE;
+    if (argc > 4) {
+        edge = string_to_edge(argv[4]);
+        if (edge == EDGE_NONE) {
+            usage();
+            return 1;
+        }
+
+        if (!(cap & INPUT_SEND))
+            WARN("An edge only means something to an input-send node, ignoring it");
+    }
+
+    struct Node node;
+    int node_ready = 0;
+
+    int keyboard_fd = -1;
+    int mouse_fd = -1;
+
+    const char *audio_source = "tinphones-pro-max-xl";
+    char *picked_source = NULL;
     if (cap & AUDIO_CAPTURE) {
-        audio_source = prompt_audio_source();
+        picked_source = prompt_audio_source();
+        if (!picked_source)
+            goto cleanup;
+
+        audio_source = picked_source;
+    }
+
+    struct Display display = {0};
+    if ((cap & INPUT_ANY) && !display_init(&display))
+        WARN("Could not read the display size, continuing without it");
+
+    if (cap & INPUT_SEND) {
+        keyboard_fd = open_selected_device(KEYBOARD, "keyboard");
+        if (keyboard_fd < 0)
+            WARN("No keyboard selected, only the mouse will be shared");
+
+        mouse_fd = open_selected_device(MOUSE, "mouse");
+        if (mouse_fd < 0)
+            WARN("No mouse selected, only the keyboard will be shared");
+
+        if (keyboard_fd < 0 && mouse_fd < 0) {
+            ERROR("input-send needs at least one device to capture from");
+            goto cleanup;
+        }
     }
 
     const char *ip = argv[2];
@@ -134,14 +165,18 @@ int main(int argc, char *argv[]) {
         port = (uint16_t)strtoul(colon + 1, NULL, 10);
     }
 
-    struct Node node;
     if (!node_init(&node, ip, port))
         goto cleanup;
 
+    node_ready = 1;
     node.role = role;
     node.cap = cap;
+    node_set_running(&node, &running);
+
     char *cfg_path = get_tin_config_path();
-    if (!key_pair_load(cfg_path, &node)) {
+    int keys_loaded = key_pair_load(cfg_path, &node);
+    free(cfg_path);
+    if (!keys_loaded) {
         ERROR("Failed to load ed25519 key pair");
         goto cleanup;
     }
@@ -159,31 +194,44 @@ int main(int argc, char *argv[]) {
 
     INFO("Node is up and running!");
 
+    pthread_t audio_tid;
+    int audio_started = 0;
+    struct AudioLink audio = {.node = &node, .source = audio_source, .running = &running};
+
     if (node.cap & AUDIO_ANY) {
-        AudioDevice *dev = audio_create(audio_source);
-        if (!dev) {
-            ERROR("Failed to create audio device");
-            goto cleanup;
-        }
-
-        pthread_t audio_tid;
-        struct AudioThread audio = {.node = &node, .dev = dev};
-
-        audio_fd = node.peer_fd;
-        int err = pthread_create(&audio_tid, NULL, audio_thread, &audio);
+        int err = pthread_create(&audio_tid, NULL, run_audio_link, &audio);
         if (err) {
-            ERROR("Failed to start the audio thread: %s", strerror(err));
-            audio_destroy(dev);
+            ERROR("Failed to start the audio link: %s", strerror(err));
             goto cleanup;
         }
 
-        pthread_join(audio_tid, NULL);
-        audio_fd = -1;
-
-        audio_destroy(dev);
+        audio_started = 1;
     }
 
+    if (node.cap & INPUT_ANY) {
+        if (handle_input(&node, mouse_fd, keyboard_fd, &display, edge, &running) < 0)
+            ERROR("Cannot handle input");
+
+        running = 0;
+        node_shutdown_peer(&node);
+    }
+
+    if (audio_started)
+        pthread_join(audio_tid, NULL);
+
 cleanup:
-    node_cleanup(&node);
+    running = 0;
+
+    if (keyboard_fd >= 0)
+        close(keyboard_fd);
+
+    if (mouse_fd >= 0)
+        close(mouse_fd);
+
+    if (node_ready)
+        node_cleanup(&node);
+
+    free(picked_source);
+    closelog();
     return 0;
 }

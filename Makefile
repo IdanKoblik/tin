@@ -1,45 +1,69 @@
-CC      := cc
+.DELETE_ON_ERROR:
+.PHONY: all wl_protocols compdb test coverage format format-check logs clean
+
+CC           := cc
+CLANG_FORMAT := clang-format
+
+INC_DIR  := include
+SRC_DIR  := src
+TEST_DIR := tests
+OBJ_DIR  := build
+COV_DIR  := coverage
+COV_OBJ  := $(COV_DIR)/obj
+
+BIN      := tin
+TEST_BIN := $(OBJ_DIR)/test_runner
+LOG      := tin.log
+
+# Depenencies
 
 SODIUM_CFLAGS := $(shell pkg-config --cflags libsodium)
 SODIUM_LIBS   := $(shell pkg-config --libs libsodium)
 
-INC_DIR := include
-SRC_DIR := src
-OBJ_DIR := build
-BIN     := tin
-LOG     := tin.log
-
 AUDIO_CFLAGS := -DUSE_PULSE
 AUDIO_LIBS   := -lpulse-simple -lpulse
 
-CFLAGS  := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -pthread -I$(INC_DIR) $(SODIUM_CFLAGS) $(AUDIO_CFLAGS)
-LDLIBS  := -lncurses -ludev -pthread $(AUDIO_LIBS) $(SODIUM_LIBS)
+DISPLAY_CFLAGS := -DUSE_WAYLAND $(shell pkg-config --cflags wayland-client)
+DISPLAY_LIBS   := $(shell pkg-config --libs wayland-client)
 
-# Sources and headers are discovered recursively, so new subdirectories under
-# src/ and include/ are picked up without touching this file.
-SRCS := $(shell find $(SRC_DIR) -name '*.c')
-HDRS := $(shell find $(INC_DIR) -name '*.h')
+# Flags
+
+CFLAGS := -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -pthread \
+          -I$(INC_DIR) \
+          $(SODIUM_CFLAGS) $(AUDIO_CFLAGS) $(DISPLAY_CFLAGS)
+
+LDLIBS := -lncurses -ludev -pthread \
+          $(SODIUM_LIBS) $(AUDIO_LIBS) $(DISPLAY_LIBS)
+
+# The test sources include greatest.h from tests/ directly.
+TEST_CFLAGS := $(CFLAGS) -I$(TEST_DIR)
+
+# Wayland protocols
+WAYLAND_SCANNER := $(shell pkg-config --variable=wayland_scanner wayland-scanner)
+WAYLAND_PROTOCOL_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
+
+PROTO_XML_DIR := protocols
+PROTO_INC_DIR := $(INC_DIR)/wayland/protocols
+PROTO_SRC_DIR := $(SRC_DIR)/wayland/protocols
+
+PROTO_XML := $(wildcard $(PROTO_XML_DIR)/*.xml)
+PROTO_HDRS := $(PROTO_XML:$(PROTO_XML_DIR)/%.xml=$(PROTO_INC_DIR)/%-protocol.h)
+PROTO_SRCS := $(PROTO_XML:$(PROTO_XML_DIR)/%.xml=$(PROTO_SRC_DIR)/%-protocol.c)
+
+# Sources
+SRCS := $(sort $(shell find $(SRC_DIR) -name '*.c') $(PROTO_SRCS))
+HDRS := $(filter-out $(PROTO_INC_DIR)/%,$(shell find $(INC_DIR) -name '*.h'))
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
-TEST_DIR  := tests
 TEST_SRCS := $(shell find $(TEST_DIR) -name '*.c')
-TEST_BIN  := $(OBJ_DIR)/test_runner
-# Link every production object except main.o (which owns its own main()).
+TEST_HDRS := $(filter-out $(TEST_DIR)/greatest.h,$(shell find $(TEST_DIR) -name '*.h'))
+# Link every production object except main.o, which owns its own main().
 TEST_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS))
 
-# Coverage: instrument the production sources (except main.c).
-COV_DIR  := coverage
-COV_OBJ  := $(COV_DIR)/obj
-COV_SRCS := $(filter-out $(SRC_DIR)/main.c,$(SRCS)) $(TEST_SRCS)
-COV_OBJS := $(COV_SRCS:%.c=$(COV_OBJ)/%.o)
+FORMAT_SRCS := $(HDRS) $(filter-out $(PROTO_SRCS),$(SRCS)) $(TEST_HDRS) $(TEST_SRCS)
 
-CLANG_FORMAT := clang-format
-# greatest.h is vendored third-party; leave it alone.
-FORMAT_SRCS := $(HDRS) $(SRCS) $(filter-out $(TEST_DIR)/greatest.h,$(shell find $(TEST_DIR) -name '*.h')) \
-               $(TEST_SRCS)
-
-.PHONY: all clean test coverage logs format format-check compdb
+# Build
 
 all: $(BIN) compile_commands.json
 
@@ -50,41 +74,57 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-# compile_commands.json for clangd/IDEs. Rebuilt by `all` whenever a source is
-# added or CFLAGS change, so clangd never falls back to flags without -I$(INC_DIR).
-compdb: compile_commands.json
+wl_protocols: $(PROTO_HDRS) $(PROTO_SRCS)
 
-compile_commands.json: $(SRCS) $(TEST_SRCS) Makefile
-	@printf '[\n' > compile_commands.json
-	@sep=""; for f in $(SRCS) $(TEST_SRCS); do \
-		printf '%s  {"directory": "%s", "file": "%s", "command": "%s %s -I%s -c %s"}\n' \
-			"$$sep" "$(CURDIR)" "$$f" \
-			"$(CC)" "$(CFLAGS)" "$(TEST_DIR)" "$$f" >> compile_commands.json; \
-		sep=","; \
-	done
-	@printf ']\n' >> compile_commands.json
-	@echo "Wrote compile_commands.json ($(words $(SRCS) $(TEST_SRCS)) entries)"
+$(OBJS): | $(PROTO_HDRS)
 
-logs:
-	journalctl -t $(BIN) -o short-iso > $(LOG)
-	@echo "Logs written to $(LOG)"
+$(PROTO_INC_DIR)/%-protocol.h: $(PROTO_XML_DIR)/%.xml
+	@mkdir -p $(@D)
+	$(WAYLAND_SCANNER) client-header $< $@
 
-test: $(TEST_OBJS) $(TEST_SRCS)
-	$(CC) $(CFLAGS) -I$(TEST_DIR) $(TEST_SRCS) $(TEST_OBJS) -o $(TEST_BIN) $(LDLIBS)
+$(PROTO_SRC_DIR)/%-protocol.c: $(PROTO_XML_DIR)/%.xml
+	@mkdir -p $(@D)
+	$(WAYLAND_SCANNER) private-code $< $@
+
+test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-# Requires lcov
+$(TEST_BIN): $(TEST_SRCS) $(TEST_OBJS)
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(TEST_SRCS) $(TEST_OBJS) -o $@ $(LDLIBS)
+
+COV_SRCS := $(filter-out $(SRC_DIR)/main.c,$(SRCS)) $(TEST_SRCS)
+COV_OBJS := $(COV_SRCS:%.c=$(COV_OBJ)/%.o)
+
 coverage: $(COV_OBJS)
 	$(CC) $(COV_OBJS) --coverage -o $(COV_DIR)/test_runner $(LDLIBS)
 	./$(COV_DIR)/test_runner
 	lcov --capture --directory $(COV_OBJ) --output-file $(COV_DIR)/coverage.info
-	lcov --remove $(COV_DIR)/coverage.info '*/tests/*' '/usr/*' --output-file $(COV_DIR)/coverage.info
+	lcov --remove $(COV_DIR)/coverage.info '*/tests/*' '*/wayland/protocols/*' '/usr/*' \
+		--output-file $(COV_DIR)/coverage.info
 	genhtml $(COV_DIR)/coverage.info --output-directory $(COV_DIR)/html
 	@echo "Coverage report: $(COV_DIR)/html/index.html"
 
+$(COV_OBJS): | $(PROTO_HDRS)
+
 $(COV_OBJ)/%.o: %.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(TEST_DIR) --coverage -c $< -o $@
+	$(CC) $(TEST_CFLAGS) --coverage -c $< -o $@
+
+compdb: compile_commands.json
+
+compile_commands.json: $(SRCS) $(TEST_SRCS) Makefile
+	@{ printf '[\n'; sep=""; \
+	   for f in $(SRCS); do \
+	       printf '%s  {"directory": "%s", "file": "%s", "command": "%s %s -c %s"}\n' \
+	           "$$sep" "$(CURDIR)" "$$f" "$(CC)" "$(CFLAGS)" "$$f"; sep=","; \
+	   done; \
+	   for f in $(TEST_SRCS); do \
+	       printf '%s  {"directory": "%s", "file": "%s", "command": "%s %s -c %s"}\n' \
+	           "$$sep" "$(CURDIR)" "$$f" "$(CC)" "$(TEST_CFLAGS)" "$$f"; sep=","; \
+	   done; \
+	   printf ']\n'; } > $@
+	@echo "Wrote $@ ($(words $(SRCS) $(TEST_SRCS)) entries)"
 
 format:
 	$(CLANG_FORMAT) -i $(FORMAT_SRCS)
@@ -92,8 +132,11 @@ format:
 format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_SRCS)
 
+logs:
+	journalctl -t $(BIN) -o short-iso > $(LOG)
+	@echo "Logs written to $(LOG)"
+
 clean:
-	rm -rf $(OBJ_DIR) $(BIN) $(LOG) $(COV_DIR)
+	rm -rf $(OBJ_DIR) $(BIN) $(LOG) $(COV_DIR) $(PROTO_INC_DIR) $(PROTO_SRC_DIR)
 
 -include $(DEPS)
-

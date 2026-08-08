@@ -30,9 +30,11 @@ void audio_destroy(AudioDevice *device);
 struct AudioThread {
     struct Node *node;
     AudioDevice *dev;
+    volatile sig_atomic_t *running;
 };
 
-void *run_audio(void *arg, volatile sig_atomic_t *running);
+void *run_audio(void *arg);
+int handle_audio(struct Node *node, const char *source, volatile sig_atomic_t *running);
 
 struct AudioSource {
     char name[MAX_INPUT];
@@ -40,3 +42,4 @@ struct AudioSource {
 };
 
 struct AudioSource *fetch_audio_sources(size_t *out_count);
+char *prompt_audio_source(void);

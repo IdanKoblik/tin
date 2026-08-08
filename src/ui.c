@@ -68,6 +68,10 @@ int select_menu(const char *title, const char *const *options, size_t count) {
                 selected = (int)cursor;
                 goto done;
 
+            // A signal interrupts the read behind getch() and shows up as
+            // ERR. Treating it as anything but a cancel means Ctrl-C leaves
+            // the caller stuck in a menu it can no longer be talked out of.
+            case ERR:
             case 'q':
             case 27:
                 goto done;
@@ -179,6 +183,8 @@ int multi_select_menu(
                 goto multi_done;
             }
 
+            // See select_menu: ERR is how a signal reaches us here.
+            case ERR:
             case 'q':
             case 27:
                 goto multi_done;
