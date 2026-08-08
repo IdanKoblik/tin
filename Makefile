@@ -1,5 +1,5 @@
 .DELETE_ON_ERROR:
-.PHONY: all wl_protocols compdb test coverage format format-check logs clean
+.PHONY: all compdb test coverage format format-check logs clean
 
 CC           := cc
 CLANG_FORMAT := clang-format
@@ -38,21 +38,9 @@ LDLIBS := -lncurses -ludev -pthread \
 # The test sources include greatest.h from tests/ directly.
 TEST_CFLAGS := $(CFLAGS) -I$(TEST_DIR)
 
-# Wayland protocols
-WAYLAND_SCANNER := $(shell pkg-config --variable=wayland_scanner wayland-scanner)
-WAYLAND_PROTOCOL_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
-
-PROTO_XML_DIR := protocols
-PROTO_INC_DIR := $(INC_DIR)/wayland/protocols
-PROTO_SRC_DIR := $(SRC_DIR)/wayland/protocols
-
-PROTO_XML := $(wildcard $(PROTO_XML_DIR)/*.xml)
-PROTO_HDRS := $(PROTO_XML:$(PROTO_XML_DIR)/%.xml=$(PROTO_INC_DIR)/%-protocol.h)
-PROTO_SRCS := $(PROTO_XML:$(PROTO_XML_DIR)/%.xml=$(PROTO_SRC_DIR)/%-protocol.c)
-
 # Sources
-SRCS := $(sort $(shell find $(SRC_DIR) -name '*.c') $(PROTO_SRCS))
-HDRS := $(filter-out $(PROTO_INC_DIR)/%,$(shell find $(INC_DIR) -name '*.h'))
+SRCS := $(sort $(shell find $(SRC_DIR) -name '*.c'))
+HDRS := $(shell find $(INC_DIR) -name '*.h')
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
@@ -61,7 +49,7 @@ TEST_HDRS := $(filter-out $(TEST_DIR)/greatest.h,$(shell find $(TEST_DIR) -name 
 # Link every production object except main.o, which owns its own main().
 TEST_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS))
 
-FORMAT_SRCS := $(HDRS) $(filter-out $(PROTO_SRCS),$(SRCS)) $(TEST_HDRS) $(TEST_SRCS)
+FORMAT_SRCS := $(HDRS) $(SRCS) $(TEST_HDRS) $(TEST_SRCS)
 
 # Build
 
@@ -73,18 +61,6 @@ $(BIN): $(OBJS)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-wl_protocols: $(PROTO_HDRS) $(PROTO_SRCS)
-
-$(OBJS): | $(PROTO_HDRS)
-
-$(PROTO_INC_DIR)/%-protocol.h: $(PROTO_XML_DIR)/%.xml
-	@mkdir -p $(@D)
-	$(WAYLAND_SCANNER) client-header $< $@
-
-$(PROTO_SRC_DIR)/%-protocol.c: $(PROTO_XML_DIR)/%.xml
-	@mkdir -p $(@D)
-	$(WAYLAND_SCANNER) private-code $< $@
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)
@@ -100,12 +76,10 @@ coverage: $(COV_OBJS)
 	$(CC) $(COV_OBJS) --coverage -o $(COV_DIR)/test_runner $(LDLIBS)
 	./$(COV_DIR)/test_runner
 	lcov --capture --directory $(COV_OBJ) --output-file $(COV_DIR)/coverage.info
-	lcov --remove $(COV_DIR)/coverage.info '*/tests/*' '*/wayland/protocols/*' '/usr/*' \
+	lcov --remove $(COV_DIR)/coverage.info '*/tests/*' '/usr/*' \
 		--output-file $(COV_DIR)/coverage.info
 	genhtml $(COV_DIR)/coverage.info --output-directory $(COV_DIR)/html
 	@echo "Coverage report: $(COV_DIR)/html/index.html"
-
-$(COV_OBJS): | $(PROTO_HDRS)
 
 $(COV_OBJ)/%.o: %.c
 	@mkdir -p $(@D)
@@ -137,6 +111,6 @@ logs:
 	@echo "Logs written to $(LOG)"
 
 clean:
-	rm -rf $(OBJ_DIR) $(BIN) $(LOG) $(COV_DIR) $(PROTO_INC_DIR) $(PROTO_SRC_DIR)
+	rm -rf $(OBJ_DIR) $(BIN) $(LOG) $(COV_DIR)
 
 -include $(DEPS)

@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (semver, with or without leading "v")'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        required: false
+        type: boolean
+        default: false
+      draft:
+        description: 'Create the release as a draft'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  APT_PACKAGES: >-
+    build-essential
+    pkg-config
+    libsodium-dev
+    libpulse-dev
+    libncurses-dev
+    libudev-dev
+    libwayland-dev
+
+jobs:
+  prepare:
+    name: Prepare release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$INPUT_VERSION' is not a valid semantic version (e.g. 1.2.3 or v1.2.3-rc.1)"
+            exit 1
+          fi
+
+          tag="v$version"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  format:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+
+      - run: make format-check
+
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.cc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES ${{ matrix.cc }}
+
+      - name: Build
+        run: make CC=${{ matrix.cc }} -j"$(nproc)"
+
+      - name: Test
+        run: make CC=${{ matrix.cc }} test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES lcov
+
+      - name: Run coverage
+        run: make coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/html
+          retention-days: 14
+
+  release-build:
+    name: Release build (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    needs: [prepare, format, test, coverage]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+
+      - name: Build
+        run: make CC="cc -O2" -j"$(nproc)"
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          name="tin-${VERSION}-linux-$(uname -m)-${{ matrix.os }}"
+          mkdir -p "dist/$name"
+          cp tin README.md LICENSE.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.event_name == 'workflow_dispatch'
+    needs: [prepare, release-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create tag
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          args=(--title "$TAG" --generate-notes --target "$GITHUB_SHA")
+          if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+
+          gh release create "$TAG" "${args[@]}" dist/*.tar.gz dist/*.sha256
+          echo "Published $TAG" >> "$GITHUB_STEP_SUMMARY"
