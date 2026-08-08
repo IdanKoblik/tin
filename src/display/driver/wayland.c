@@ -1,33 +1,46 @@
 #include "display/driver/wayland.h"
 #include "display/common.h"
 #include "logging/log.h"
+#include <string.h>
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 
-static void geometry(void *data,
-                     struct wl_output *output,
-                     int32_t x,
-                     int32_t y,
-                     int32_t physical_width,
-                     int32_t physical_height,
-                     int32_t subpixel,
-                     const char *make,
-                     const char *model,
-                     int32_t transform)
-{
+static void geometry(void *data, struct wl_output *output, int32_t x, int32_t y, int32_t physical_width,
+                     int32_t physical_height, int32_t subpixel, const char *make, const char *model,
+                     int32_t transform) {
+    (void)data;
+    (void)output;
+    (void)x;
+    (void)y;
+    (void)physical_width;
+    (void)physical_height;
+    (void)subpixel;
+    (void)make;
+    (void)model;
+    (void)transform;
 }
 
 static void mode(void *data, struct wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
+    (void)output;
+    (void)refresh;
     struct Display *display = data;
-    if (flags & WL_OUTPUT_MODE_CURRENT) {
+
+    if ((flags & WL_OUTPUT_MODE_CURRENT) && !display->width && !display->height) {
         display->width = width;
         display->height = height;
     }
 }
 
-static void done(void *data, struct wl_output *output) {}
+static void done(void *data, struct wl_output *output) {
+    (void)data;
+    (void)output;
+}
 
-static void scale(void *data, struct wl_output *output, int32_t factor) {}
+static void scale(void *data, struct wl_output *output, int32_t factor) {
+    (void)data;
+    (void)output;
+    (void)factor;
+}
 
 static const struct wl_output_listener output_listener = {
     geometry,
@@ -72,6 +85,9 @@ int display_get_size(struct Display *display) {
     wl_registry_add_listener(registry, &registry_listener, display);
     wl_display_roundtrip(dis); // receive globals, bind wl_output
     wl_display_roundtrip(dis); // receive the output's geometry/mode/done
+
+    wl_registry_destroy(registry);
+    wl_display_disconnect(dis);
 
     return 1;
 }

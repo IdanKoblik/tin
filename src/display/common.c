@@ -4,6 +4,37 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum Edge string_to_edge(const char *str) {
+    if (!strcmp(str, "left"))
+        return EDGE_LEFT;
+
+    if (!strcmp(str, "right"))
+        return EDGE_RIGHT;
+
+    if (!strcmp(str, "top"))
+        return EDGE_TOP;
+
+    if (!strcmp(str, "bottom"))
+        return EDGE_BOTTOM;
+
+    return EDGE_NONE;
+}
+
+const char *edge_to_string(enum Edge edge) {
+    switch (edge) {
+    case EDGE_LEFT:
+        return "left";
+    case EDGE_RIGHT:
+        return "right";
+    case EDGE_TOP:
+        return "top";
+    case EDGE_BOTTOM:
+        return "bottom";
+    default:
+        return "none";
+    }
+}
+
 int display_init(struct Display *display) {
     if (!display) {
         ERROR("Cannot find display");

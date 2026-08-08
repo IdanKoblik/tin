@@ -29,7 +29,10 @@ static void handle_signal(int sig) {
 
 static void usage() {
     printf("./tin <role (host | connect)> <addr> <caps (mic | speaker | input-send | "
-           "input-recv, comma separated)>\n");
+           "input-recv, comma separated)> [edge (left | right | top | bottom)]\n");
+    printf("\n  edge  input-send only: the screen side that hands the input to the peer.\n");
+    printf("        Push the pointer into it to take the peer over, push back out to\n");
+    printf("        come home. Left out, every event goes to both machines at once.\n");
 }
 
 static char *get_tin_config_path(void) {
@@ -104,6 +107,18 @@ int main(int argc, char *argv[]) {
     if (!cap) {
         usage();
         return 1;
+    }
+
+    enum Edge edge = EDGE_NONE;
+    if (argc > 4) {
+        edge = string_to_edge(argv[4]);
+        if (edge == EDGE_NONE) {
+            usage();
+            return 1;
+        }
+
+        if (!(cap & INPUT_SEND))
+            WARN("An edge only means something to an input-send node, ignoring it");
     }
 
     struct Node node;
@@ -194,7 +209,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (node.cap & INPUT_ANY) {
-        if (handle_input(&node, mouse_fd, keyboard_fd, &running) < 0)
+        if (handle_input(&node, mouse_fd, keyboard_fd, &display, edge, &running) < 0)
             ERROR("Cannot handle input");
 
         running = 0;
